@@ -8,13 +8,51 @@ MaskGMT is a text-to-music generation paradigm using a hierarchy bidirectional t
 During training, MaskGMT learns to predict randomly masked tokens by attending to tokens in all directions as different residual quantification. 
 At inference time, the model begins with generating all main tokens of a music sequence simultaneously, and then refines the residual sequence iteratively conditioned on the previous generation. 
 
-# Usage
+## Usage
 
-1. parepare for music compression 
+### Text-Conditional Generator
+A text-to-music model that conditions the generation with `t5-base` text embeddings, requires `pip install transformers`.
 
-2. generate music token sequence 
+
+```py
+from maskgmt import MaskGmtTransformer, MaskGmt, TokenCritic
+
+transformer = MaskGmtTransformer(
+    num_tokens = 1024,        # must be same as encodec codebook size above
+    seq_len = 750,            # must be down-sampling length
+    dim = 512,                # model dimension
+    n_q = 8,                  # down-sampling quantification dim
+    depth = 2,                # depth of transformer block
+    dim_head = 64,            # attention head dimension
+    heads = 8,                # attention heads,
+    ff_mult = 4,              # feedforward expansion factor
+)
+
+critic = TokenCritic(
+    num_tokens = 1024,
+    seq_len = 750,
+    dim = 512,
+    depth = 6,
+)
+
+maskgmt_model = MaskGmt(
+    transformer = transformer,
+    cond_drop_prob = 0.25,
+    token_critic = critic, 
+    self_token_critic = False,
+)
 
 
-# Acknowledge 
+texts = ['I have a pencil', 'I have a pen'] 
+music = torch.ones(2, 8, 750).long() 
+
+loss = maskgmt_model(music_ids=music, texts=texts) 
+loss.backward()
+
+```
+
+
+
+## Acknowledge 
 
 Our code is based on [encodec](https://github.com/facebookresearch/encodec), [MaskGiT](https://github.com/lucidrains/muse-maskgit-pytorch), and [Huggingface](https://github.com/huggingface/transformers). Thanks for their clear code. 
