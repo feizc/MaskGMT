@@ -4,9 +4,6 @@
 <p align="center">
      <img src="figures/logo.png" alt="Edited cases" width = "600">
      <br/>
-     <sub><em>
-     Mask Generative Music Transformer.
-    </em></sub>
 </p>
 
 
@@ -23,4 +20,4 @@ At inference time, the model begins with generating all main tokens of a music s
 
 # Acknowledge 
 
-Our code is based on [MaskGiT](https://github.com/lucidrains/muse-maskgit-pytorch). Thanks for their clear code. 
+Our code is based on [MaskGiT](https://github.com/lucidrains/muse-maskgit-pytorch) and [Huggingface](https://github.com/huggingface/transformers). Thanks for their clear code. 
