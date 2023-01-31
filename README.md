@@ -52,7 +52,34 @@ loss.backward()
 ```
 
 
+### Music Tokenizer and DeTokenizer 
+Transfer wav formation of music to torch code and revserse back.
+
+```py
+from encodec import EncodecModel 
+from encodec.utils import convert_audio, save_audio
+
+model = EncodecModel.encodec_model_24khz()
+model.set_target_bandwidth(6.0) 
+
+path = 'test.wav' 
+
+# transfer to code
+wav, sr = torchaudio.load(path) 
+wav = convert_audio(wav, sr, model.sample_rate, model.channels).unsqueeze(0) 
+with torch.no_grad():
+    encoded_frames = model.encode(wav) 
+
+codes = torch.cat([encoded[0] for encoded in encoded_frames], dim=-1)
+
+# transfer to wav 
+with torch.no_grad(): 
+    frames = model.decode([(codes, None)]).squeeze(0)
+save_audio(frames, path, sample_rate= model.sample_rate)
+
+```
+
 
 ## Acknowledge 
 
-Our code is based on [encodec](https://github.com/facebookresearch/encodec), [MaskGiT](https://github.com/lucidrains/muse-maskgit-pytorch), and [Huggingface](https://github.com/huggingface/transformers). Thanks for their clear code. 
+Our code is based on [encodec](https://github.com/facebookresearch/encodec), [MaskGiT](https://github.com/lucidrains/muse-maskgit-pytorch), and [Huggingface](https://github.com/huggingface/transformers). Thanks for their clear and beautiful code. 
