@@ -17,4 +17,4 @@ At inference time, the model begins with generating all main tokens of a music s
 
 # Acknowledge 
 
-Our code is based on [MaskGiT](https://github.com/lucidrains/muse-maskgit-pytorch) and [Huggingface](https://github.com/huggingface/transformers). Thanks for their clear code. 
+Our code is based on [encodec](https://github.com/facebookresearch/encodec), [MaskGiT](https://github.com/lucidrains/muse-maskgit-pytorch), and [Huggingface](https://github.com/huggingface/transformers). Thanks for their clear code. 
