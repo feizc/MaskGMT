@@ -4,8 +4,8 @@
 </p>
 
 
-MaskGMT is a music generation paradigm using a hierarchy bidirectional transformer and tokenize-detokenize encodec. 
-During training, MaskGMT learns to predict randomly masked tokens by attending to tokens in all directions. 
+MaskGMT is a music generation paradigm using a hierarchy bidirectional transformer and tokenize-detokenize encodec neural compression. 
+During training, MaskGMT learns to predict randomly masked tokens by attending to tokens in all directions as different residual quantification. 
 At inference time, the model begins with generating all main tokens of a music sequence simultaneously, and then refines the residual sequence iteratively conditioned on the previous generation. 
 
 # Usage
