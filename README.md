@@ -1,6 +1,3 @@
-# Mask Generative Music Transformer
-
-
 <p align="center">
      <img src="figures/logo.png" alt="Edited cases" width = "600">
      <br/>
