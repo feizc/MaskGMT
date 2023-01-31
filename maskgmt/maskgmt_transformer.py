@@ -1,6 +1,6 @@
 import math
-from random import random
 from functools import partial
+import random 
 
 import torch
 import torch.nn.functional as F
@@ -144,6 +144,7 @@ class Attention(nn.Module):
         out = rearrange(out, 'b h n d -> b n (h d)')
         return self.to_out(out)
 
+
 class TransformerBlocks(nn.Module):
     def __init__(
         self,
@@ -176,7 +177,7 @@ class TransformerBlocks(nn.Module):
 
         return self.norm(x)
 
-# transformer - it's all we need
+
 
 class Transformer(nn.Module):
     def __init__(
@@ -198,6 +199,165 @@ class Transformer(nn.Module):
         self.num_tokens = num_tokens
         self.token_emb = nn.Embedding(num_tokens + int(add_mask_id), dim)
         self.pos_emb = nn.Embedding(seq_len, dim)
+        self.seq_len = seq_len
+
+        self.transformer_blocks = TransformerBlocks(dim = dim, **kwargs)
+        self.norm = LayerNorm(dim)
+
+        self.dim_out = default(dim_out, num_tokens)
+        self.to_logits = nn.Linear(dim, self.dim_out, bias = False)
+
+        # text conditioning
+
+        self.encode_text = partial(t5_encode_text, name = t5_name)
+
+        text_embed_dim = get_encoded_dim(t5_name)
+
+        self.text_embed_proj = nn.Linear(text_embed_dim, dim, bias = False) if text_embed_dim != dim else nn.Identity() 
+
+        # optional self conditioning
+
+        self.self_cond = self_cond
+        self.self_cond_to_init_embed = FeedForward(dim)
+
+    def forward_with_cond_scale(
+        self,
+        *args,
+        cond_scale = 3.,
+        return_embed = False,
+        **kwargs
+    ):
+        if cond_scale == 1:
+            return self.forward(*args, return_embed = return_embed, cond_drop_prob = 0., **kwargs)
+
+        logits, embed = self.forward(*args, return_embed = True, cond_drop_prob = 0., **kwargs)
+
+        null_logits = self.forward(*args, cond_drop_prob = 1., **kwargs)
+
+        scaled_logits = null_logits + (logits - null_logits) * cond_scale
+
+        if return_embed:
+            return scaled_logits, embed
+
+        return scaled_logits
+
+    def forward_with_neg_prompt(
+        self,
+        text_embed: torch.Tensor,
+        neg_text_embed: torch.Tensor,
+        cond_scale = 3.,
+        return_embed = False,
+        **kwargs
+    ):
+        neg_logits = self.forward(*args, neg_text_embed = neg_text_embed, cond_drop_prob = 0., **kwargs)
+        pos_logits, embed = self.forward(*args, return_embed = True, text_embed = text_embed, cond_drop_prob = 0., **kwargs)
+
+        logits = neg_logits + (pos_logits - neg_logits) * cond_scale
+
+        if return_embed:
+            return scaled_logits, embed
+
+        return scaled_logits
+
+    def forward(
+        self,
+        x,
+        return_embed = False,
+        return_logits = False,
+        labels = None,
+        ignore_index = 0,
+        self_cond_embed = None,
+        cond_drop_prob = 0.,
+        conditioning_token_ids: Optional[torch.Tensor] = None,
+        texts: Optional[List[str]] = None,
+        text_embeds: Optional[torch.Tensor] = None
+    ):
+        device, b, n = x.device, *x.shape
+        assert n <= self.seq_len
+
+        # prepare texts
+
+        assert exists(texts) ^ exists(text_embeds)
+
+        if exists(texts):
+            text_embeds = self.encode_text(texts)
+
+        context = self.text_embed_proj(text_embeds)
+
+        context_mask = (text_embeds != 0).any(dim = -1)
+
+        # classifier free guidance
+
+        if self.training and cond_drop_prob > 0.:
+            mask = prob_mask_like((b, 1), 1. - cond_drop_prob, device)
+            context_mask = context_mask & mask
+
+        # concat conditioning image token ids if needed
+
+        if exists(conditioning_token_ids):
+            conditioning_token_ids = rearrange(conditioning_token_ids, 'b ... -> b (...)')
+            cond_token_emb = self.token_emb(conditioning_token_ids)
+            context = torch.cat((context, cond_token_emb), dim = -2)
+            context_mask = F.pad(context_mask, (0, conditioning_token_ids.shape[-1]), value = True)
+
+        # embed tokens
+
+        x = self.token_emb(x)
+        x = x + self.pos_emb(torch.arange(n, device = device))
+
+        if self.self_cond:
+            if not exists(self_cond_embed):
+                self_cond_embed = torch.zeros_like(x)
+            x = x + self.self_cond_to_init_embed(self_cond_embed)
+
+        embed = self.transformer_blocks(x, context = context, context_mask = context_mask)
+
+        logits = self.to_logits(embed)
+
+        if return_embed:
+            return logits, embed
+
+        if not exists(labels):
+            return logits
+
+        if self.dim_out == 1:
+            loss = F.binary_cross_entropy_with_logits(rearrange(logits, '... 1 -> ...'), labels)
+        else:
+            loss = F.cross_entropy(rearrange(logits, 'b n c -> b c n'), labels, ignore_index = ignore_index)
+
+        if not return_logits:
+            return loss
+
+        return loss, logits
+
+
+
+
+class MusicTransformer(nn.Module):
+    def __init__(
+        self,
+        *,
+        num_tokens,
+        dim,
+        seq_len,
+        n_q=8, # quantification dim for music
+        dim_out = None,
+        t5_name = DEFAULT_T5_NAME,
+        self_cond = False,
+        add_mask_id = False,
+        **kwargs
+    ):
+        super().__init__()
+        self.dim = dim
+        self.n_q = n_q
+        self.mask_id = num_tokens if add_mask_id else None
+
+        self.num_tokens = num_tokens
+        
+        # self.token_emb = nn.Embedding(num_tokens + int(add_mask_id), dim) 
+        # token embedding for different codec
+        self.token_emb = nn.ModuleList([nn.Embedding(num_tokens + int(add_mask_id), dim) for _ in range(n_q)])
+        self.pos_emb = nn.Embedding(seq_len*2, dim)
         self.seq_len = seq_len
 
         self.transformer_blocks = TransformerBlocks(dim = dim, **kwargs)
@@ -261,19 +421,20 @@ class Transformer(nn.Module):
     def forward(
         self,
         x,
+        idx, # idx-th row for music code matrix 
         return_embed = False,
         return_logits = False,
         labels = None,
         ignore_index = 0,
         self_cond_embed = None,
         cond_drop_prob = 0.,
-        conditioning_token_ids: Optional[torch.Tensor] = None,  # text 
         texts: Optional[List[str]] = None,
         text_embeds: Optional[torch.Tensor] = None
     ):
-        device, b, n = x.device, *x.shape
+        device, b, n_q, n = x.device, *x.shape
         assert n <= self.seq_len
-
+        assert n_q == self.n_q 
+        assert idx < self.n_q 
         # prepare texts
 
         assert exists(texts) ^ exists(text_embeds)
@@ -291,18 +452,17 @@ class Transformer(nn.Module):
             mask = prob_mask_like((b, 1), 1. - cond_drop_prob, device)
             context_mask = context_mask & mask
 
-        # concat conditioning image token ids if needed
-
-        if exists(conditioning_token_ids):
-            conditioning_token_ids = rearrange(conditioning_token_ids, 'b ... -> b (...)')
-            cond_token_emb = self.token_emb(conditioning_token_ids)
-            context = torch.cat((context, cond_token_emb), dim = -2)
-            context_mask = F.pad(context_mask, (0, conditioning_token_ids.shape[-1]), value = True)
-
-        # embed tokens
-
-        x = self.token_emb(x)
-        x = x + self.pos_emb(torch.arange(n, device = device))
+        # sum up history music tokens 
+        if idx == 0:
+            history_ = torch.zeros((b, n, self.dim)).to(device)
+        else:
+            history_ = [self.token_emb[k](x[:, k]) for k in range(idx)]
+            history_  = torch.stack(history_, dim=0) 
+            history_ = torch.sum(history_, dim=0)
+        
+        x = self.token_emb[idx](x[:, idx]) 
+        x = torch.cat((history_, x), dim=1) 
+        x = x + self.pos_emb(torch.arange(x.size(1), device = device))
 
         if self.self_cond:
             if not exists(self_cond_embed):
@@ -311,6 +471,8 @@ class Transformer(nn.Module):
 
         embed = self.transformer_blocks(x, context = context, context_mask = context_mask)
 
+        # select the last n hidden states 
+        embed = embed[:, -n:, :] 
         logits = self.to_logits(embed)
 
         if return_embed:
@@ -357,7 +519,7 @@ class SelfCritic(nn.Module):
 
 # specialized transformers
 
-class MaskGmtTransformer(Transformer):
+class MaskGmtTransformer(MusicTransformer):
     def __init__(self, *args, **kwargs):
         assert 'add_mask_id' not in kwargs
         super().__init__(*args, add_mask_id = True, **kwargs)
@@ -410,39 +572,22 @@ def cosine_schedule(t):
 class MaskGmt(nn.Module):
     def __init__(
         self,
-        image_size,
         transformer: MaskGmtTransformer,
         noise_schedule: Callable = cosine_schedule,
         token_critic: Optional[TokenCritic] = None,
         self_token_critic = False,
-        vae = None,
-        cond_vae = None,
-        cond_image_size = None,
         cond_drop_prob = 0.5,
         self_cond_prob = 0.9,
         no_mask_token_prob = 0.,
         critic_loss_weight = 1.
     ):
         super().__init__()
-        self.vae = vae.copy_for_eval() if exists(vae) else None
-
-        if exists(cond_vae):
-            self.cond_vae = cond_vae.eval()
-        else:
-            self.cond_vae = self.vae
-
-        assert not (exists(cond_vae) and not exists(cond_image_size)), 'cond_image_size must be specified if conditioning'
-
-        self.image_size = image_size
-        self.cond_image_size = cond_image_size
-        self.resize_image_for_cond_image = exists(cond_image_size)
 
         self.cond_drop_prob = cond_drop_prob
 
         self.transformer = transformer
         self.self_cond = transformer.self_cond
-        # assert self.vae.codebook_size == self.cond_vae.codebook_size == transformer.num_tokens, 'transformer num_tokens must be set to be equal to the vae codebook size'
-
+        
         self.mask_id = transformer.mask_id
         self.noise_schedule = noise_schedule
 
@@ -604,52 +749,21 @@ class MaskGmt(nn.Module):
 
     def forward(
         self,
-        images_or_ids: torch.Tensor,
+        music_ids: torch.Tensor,
         ignore_index = -1,
-        cond_images: Optional[torch.Tensor] = None,
-        cond_token_ids: Optional[torch.Tensor] = None,
         texts: Optional[List[str]] = None,
         text_embeds: Optional[torch.Tensor] = None,
         cond_drop_prob = None,
         train_only_generator = False,
         sample_temperature = None
     ):
-        # tokenize if needed
 
-        if images_or_ids.dtype == torch.float:
-            assert exists(self.vae), 'vqgan vae must be passed in if training from raw images'
-            assert all([height_or_width == self.image_size for height_or_width in images_or_ids.shape[-2:]]), 'the image you passed in is not of the correct dimensions'
-
-            with torch.no_grad():
-                _, ids, _ = self.vae.encode(images_or_ids)
-        else:
-            assert not self.resize_image_for_cond_image, 'you cannot pass in raw image token ids if you want the framework to autoresize image for conditioning super res transformer'
-            ids = images_or_ids
-
-        # take care of conditioning image if specified
-
-        if self.resize_image_for_cond_image:
-            cond_images_or_ids = F.interpolate(images_or_ids, self.cond_image_size, mode = 'nearest')
 
         # get some basic variables
+        batch, n_q, seq_len, device, cond_drop_prob = *music_ids.shape, music_ids.device, default(cond_drop_prob, self.cond_drop_prob)
 
-        ids = rearrange(ids, 'b ... -> b (...)')
-
-        batch, seq_len, device, cond_drop_prob = *ids.shape, ids.device, default(cond_drop_prob, self.cond_drop_prob)
-
-        # tokenize conditional images if needed
-
-        assert not (exists(cond_images) and exists(cond_token_ids)), 'if conditioning on low resolution, cannot pass in both images and token ids'
-
-        if exists(cond_images):
-            assert exists(self.cond_vae), 'cond vqgan vae must be passed in'
-            assert all([height_or_width == self.cond_image_size for height_or_width in cond_images.shape[-2:]])
-
-            with torch.no_grad():
-                _, cond_token_ids, _ = self.cond_vae.encode(cond_images)
-
+        index = random.randrange(n_q)
         # prepare mask
-
         rand_time = uniform((batch,), device = device)
         rand_mask_probs = self.noise_schedule(rand_time)
         num_token_masked = (seq_len * rand_mask_probs).round().clamp(min = 1)
@@ -657,15 +771,17 @@ class MaskGmt(nn.Module):
         mask_id = self.mask_id
         batch_randperm = torch.rand((batch, seq_len), device = device).argsort(dim = -1)
         mask = batch_randperm < rearrange(num_token_masked, 'b -> b 1')
-
+        
         mask_id = self.transformer.mask_id
-        labels = torch.where(mask, ids, ignore_index)
+        labels = torch.where(mask, music_ids[:, index, :], ignore_index)
 
         if self.no_mask_token_prob > 0.:
             no_mask_mask = get_mask_subset_prob(mask, self.no_mask_token_prob)
             mask &= ~no_mask_mask
 
-        x = torch.where(mask, mask_id, ids)
+        x = torch.where(mask, mask_id, music_ids[:, index, :]) 
+        raw_music_ids = music_ids[:, index, :].clone().detach()
+        music_ids[:, index, :] = x
 
         # get text embeddings
 
@@ -677,12 +793,11 @@ class MaskGmt(nn.Module):
 
         self_cond_embed = None
 
-        if self.transformer.self_cond and random() < self.self_cond_prob:
+        if self.transformer.self_cond and random.random() < self.self_cond_prob:
             with torch.no_grad():
                 _, self_cond_embed = self.transformer(
                     x,
                     text_embeds = text_embeds,
-                    conditioning_token_ids = cond_token_ids,
                     cond_drop_prob = 0.,
                     return_embed = True
                 )
@@ -692,10 +807,10 @@ class MaskGmt(nn.Module):
         # get loss
 
         ce_loss, logits = self.transformer(
-            x,
+            music_ids,
+            index,
             text_embeds = text_embeds,
             self_cond_embed = self_cond_embed,
-            conditioning_token_ids = cond_token_ids,
             labels = labels,
             cond_drop_prob = cond_drop_prob,
             ignore_index = ignore_index,
@@ -706,16 +821,15 @@ class MaskGmt(nn.Module):
             return ce_loss
 
         # token critic loss
-
-        sampled_ids = gumbel_sample(logits, temperature = default(sample_temperature, random()))
+        sample_temperature = sample_temperature if sample_temperature is not None else random.random()
+        sampled_ids = gumbel_sample(logits, temperature = sample_temperature)
 
         critic_input = torch.where(mask, sampled_ids, x)
-        critic_labels = (ids != critic_input).float()
+        critic_labels = (raw_music_ids != critic_input).float()
 
         bce_loss = self.token_critic(
             critic_input,
             text_embeds = text_embeds,
-            conditioning_token_ids = cond_token_ids,
             labels = critic_labels,
             cond_drop_prob = cond_drop_prob
         )
