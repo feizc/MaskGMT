@@ -11,8 +11,7 @@ At inference time, the model begins with generating all main tokens of a music s
 ## Usage
 
 ### Text-Conditional Generator
-A text-to-music model that conditions the generation with `t5-base` text embeddings, requires `pip install transformers`.
-
+A text-to-music model that conditions the generation with `t5-base` text embeddings. 
 
 ```py
 from maskgmt import MaskGmtTransformer, MaskGmt, TokenCritic
