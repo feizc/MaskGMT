@@ -355,9 +355,11 @@ class MusicTransformer(nn.Module):
         self.num_tokens = num_tokens
         
         # self.token_emb = nn.Embedding(num_tokens + int(add_mask_id), dim) 
+        # if share the position, we should scale with two times length 
+        # self.pos_emb = nn.Embedding(seq_len*2, dim) 
         # token embedding for different codec
         self.token_emb = nn.ModuleList([nn.Embedding(num_tokens + int(add_mask_id), dim) for _ in range(n_q)])
-        self.pos_emb = nn.Embedding(seq_len*2, dim)
+        self.pos_emb = nn.ModuleList([nn.Embedding(seq_len, dim) for _ in range(n_q)])
         self.seq_len = seq_len
 
         self.transformer_blocks = TransformerBlocks(dim = dim, **kwargs)
@@ -455,14 +457,14 @@ class MusicTransformer(nn.Module):
         # sum up history music tokens 
         if idx == 0:
             history_ = torch.zeros((b, n, self.dim)).to(device)
+            history_ += self.pos_emb[0](torch.arange(history_.size(1), device = device))
         else:
-            history_ = [self.token_emb[k](x[:, k]) for k in range(idx)]
+            history_ = [self.token_emb[k](x[:, k]) + self.pos_emb[k](torch.arange(x.size(-1), device = device)) for k in range(idx)]
             history_  = torch.stack(history_, dim=0) 
             history_ = torch.sum(history_, dim=0)
         
-        x = self.token_emb[idx](x[:, idx]) 
+        x = self.token_emb[idx](x[:, idx]) + self.pos_emb[idx](torch.arange(x.size(-1), device = device))
         x = torch.cat((history_, x), dim=1) 
-        x = x + self.pos_emb(torch.arange(x.size(1), device = device))
 
         if self.self_cond:
             if not exists(self_cond_embed):
@@ -621,34 +623,25 @@ class MaskGmt(nn.Module):
         self,
         texts: List[str],
         negative_texts: Optional[List[str]] = None,
-        cond_images: Optional[torch.Tensor] = None,
-        fmap_size = None,
         temperature = 1.,
         topk_filter_thres = 0.9,
         can_remask_prev_masked = False,
         force_not_use_token_critic = False,
-        timesteps = 18,  # ideal number of steps is 18 in maskgit paper
+        timesteps = 16,  
         cond_scale = 3,
         critic_noise_scale = 1
     ):
-        fmap_size = default(fmap_size, self.vae.get_encoded_fmap_size(self.image_size))
-
-        # begin with all image token ids masked
+        # begin with all music token ids masked
 
         device = next(self.parameters()).device
 
-        seq_len = fmap_size ** 2
+        seq_len = self.transformer.seq_len
 
         batch_size = len(texts)
 
-        shape = (batch_size, seq_len)
-
-        ids = torch.full(shape, self.mask_id, dtype = torch.long, device = device)
-        scores = torch.zeros(shape, dtype = torch.float32, device = device)
-
+        shape = (batch_size, self.transformer.n_q, seq_len)
+        music_ids = torch.full(shape, self.mask_id, dtype = torch.long, device = device) 
         starting_temperature = temperature
-
-        cond_ids = None
 
         text_embeds = self.transformer.encode_text(texts)
 
@@ -658,10 +651,10 @@ class MaskGmt(nn.Module):
 
         use_token_critic = exists(self.token_critic) and not force_not_use_token_critic
 
-        if use_token_critic:
+        if use_token_critic: 
             token_critic_fn = self.token_critic.forward_with_cond_scale
 
-        # negative prompting, as in paper
+        # negative prompting
 
         neg_text_embeds = None
         if exists(negative_texts):
@@ -673,79 +666,68 @@ class MaskGmt(nn.Module):
             if use_token_critic:
                 token_critic_fn = partial(self.token_critic.forward_with_neg_prompt, neg_text_embeds = neg_text_embeds)
 
-        if self.resize_image_for_cond_image:
-            assert exists(cond_images), 'conditioning image must be passed in to generate for super res maskgit'
-            with torch.no_grad():
-                _, cond_ids, _ = self.cond_vae.encode(cond_images)
 
-        self_cond_embed = None
+        self_cond_embed = None 
 
-        for timestep, steps_until_x0 in tqdm(zip(torch.linspace(0, 1, timesteps, device = device), reversed(range(timesteps))), total = timesteps):
+        for index in range(self.transformer.n_q): 
 
-            rand_mask_prob = self.noise_schedule(timestep)
-            num_token_masked = max(int((rand_mask_prob * seq_len).item()), 1)
+            scores = torch.zeros((batch_size, seq_len), dtype = torch.float32, device = device)
 
-            masked_indices = scores.topk(num_token_masked, dim = -1).indices
+            for timestep, steps_until_x0 in tqdm(zip(torch.linspace(0, 1, timesteps, device = device), reversed(range(timesteps))), total = timesteps):
 
-            ids = ids.scatter(1, masked_indices, self.mask_id)
+                rand_mask_prob = self.noise_schedule(timestep)
+                num_token_masked = max(int((rand_mask_prob * seq_len).item()), 1)
+                masked_indices = scores.topk(num_token_masked, dim = -1).indices
+                music_ids[:, index, :] = music_ids[:, index, :].scatter(1, masked_indices, self.mask_id)
 
-            logits, embed = demask_fn(
-                ids,
-                text_embeds = text_embeds,
-                self_cond_embed = self_cond_embed,
-                conditioning_token_ids = cond_ids,
-                cond_scale = cond_scale,
-                return_embed = True
-            )
-
-            self_cond_embed = embed if self.self_cond else None
-
-            filtered_logits = top_k(logits, topk_filter_thres)
-
-            temperature = starting_temperature * (steps_until_x0 / timesteps) # temperature is annealed
-
-            pred_ids = gumbel_sample(filtered_logits, temperature = temperature, dim = -1)
-
-            is_mask = ids == self.mask_id
-
-            ids = torch.where(
-                is_mask,
-                pred_ids,
-                ids
-            )
-
-            if use_token_critic:
-                scores = token_critic_fn(
-                    ids,
+                logits, embed = demask_fn(
+                    x = music_ids,
+                    idx = index, 
                     text_embeds = text_embeds,
-                    conditioning_token_ids = cond_ids,
-                    cond_scale = cond_scale
+                    self_cond_embed = self_cond_embed,
+                    cond_scale = cond_scale,
+                    return_embed = True
                 )
 
-                scores = rearrange(scores, '... 1 -> ...')
+                self_cond_embed = embed if self.self_cond else None
 
-                scores = scores + (uniform(scores.shape, device = device) - 0.5) * critic_noise_scale * (steps_until_x0 / timesteps)
+                filtered_logits = top_k(logits, topk_filter_thres)
 
-            else:
-                probs_without_temperature = logits.softmax(dim = -1)
+                temperature = starting_temperature * (steps_until_x0 / timesteps) # temperature is annealed
 
-                scores = 1 - probs_without_temperature.gather(2, pred_ids[..., None])
-                scores = rearrange(scores, '... 1 -> ...')
+                pred_ids = gumbel_sample(filtered_logits, temperature = temperature, dim = -1)  # (bsz, length)
+                is_mask = music_ids[:, index, :] == self.mask_id
 
-                if not can_remask_prev_masked:
-                    scores = scores.masked_fill(~is_mask, -1e5)
+                music_ids[:, index, :] = torch.where(
+                    is_mask,
+                    pred_ids,
+                    music_ids[:, index, :]
+                )
+
+                if use_token_critic:
+                    scores = token_critic_fn(
+                        music_ids[:, index, :],
+                        text_embeds = text_embeds,
+                        cond_scale = cond_scale
+                    )
+
+                    scores = rearrange(scores, '... 1 -> ...')
+
+                    scores = scores + (uniform(scores.shape, device = device) - 0.5) * critic_noise_scale * (steps_until_x0 / timesteps)
+
                 else:
-                    assert self.no_mask_token_prob > 0., 'without training with some of the non-masked tokens forced to predict, not sure if the logits will be meaningful for these token'
+                    probs_without_temperature = logits.softmax(dim = -1)
 
-        # get ids
+                    scores = 1 - probs_without_temperature.gather(2, pred_ids[..., None])
+                    scores = rearrange(scores, '... 1 -> ...')
 
-        ids = rearrange(ids, 'b (i j) -> b i j', i = fmap_size, j = fmap_size)
-
-        if not exists(self.vae):
-            return ids
-
-        images = self.vae.decode_from_ids(ids)
-        return images
+                    if not can_remask_prev_masked:
+                        scores = scores.masked_fill(~is_mask, -1e5)
+                    else:
+                        assert self.no_mask_token_prob > 0., 'without training with some of the non-masked tokens forced to predict, not sure if the logits will be meaningful for these token'
+                
+        # get ids 
+        return music_ids 
 
     def forward(
         self,
