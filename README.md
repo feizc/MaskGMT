@@ -76,7 +76,6 @@ wav, sr = torchaudio.load(path)
 wav = convert_audio(wav, sr, model.sample_rate, model.channels).unsqueeze(0) 
 with torch.no_grad():
     encoded_frames = model.encode(wav) 
-
 codes = torch.cat([encoded[0] for encoded in encoded_frames], dim=-1)
 
 # transfer to wav 
