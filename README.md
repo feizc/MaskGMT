@@ -46,8 +46,15 @@ maskgmt_model = MaskGmt(
 texts = ['I have a pencil', 'I have a pen'] 
 music = torch.ones(2, 8, 750).long() 
 
+# training
 loss = maskgmt_model(music_ids=music, texts=texts) 
 loss.backward()
+
+# infer 
+music_tokens = maskgmt_model.generate(
+     texts = texts,
+     cond_scale = 3.,
+)
 
 ```
 
@@ -78,6 +85,12 @@ with torch.no_grad():
 save_audio(frames, path, sample_rate= model.sample_rate)
 
 ```
+
+
+## Cases 
+We provide the trained ckpt in the google drive.
+Some well-generated music cases can be found in google drive.
+
 
 
 ## Acknowledge 
