@@ -95,4 +95,4 @@ Some well-generated music cases can be found in google drive.
 
 ## Acknowledge 
 
-Our code is based on [encodec](https://github.com/facebookresearch/encodec), [MaskGiT](https://github.com/lucidrains/muse-maskgit-pytorch), and [Huggingface](https://github.com/huggingface/transformers). Thanks for their clear and beautiful code. 
+Our implementation is based on [encodec](https://github.com/facebookresearch/encodec), [MaskGiT](https://github.com/lucidrains/muse-maskgit-pytorch), and [Huggingface](https://github.com/huggingface/transformers). Thanks for their clear and beautiful code. 
