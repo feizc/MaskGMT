@@ -5,7 +5,7 @@
 
 
 MaskGMT is a text-to-music generation paradigm using a hierarchy bidirectional transformer with tokenize-detokenize neural compression. 
-During training, MaskGMT learns to predict randomly masked tokens by attending to tokens in all directions as different residual quantification. 
+During training, MaskGMT learns to predict randomly masked tokens by attending to tokens in all directions at different residual quantification stages (8 by default). 
 At inference time, the model begins with generating all main tokens of a music sequence simultaneously, and then refines the residual sequence iteratively conditioned on the previous generation. 
 
 ## Usage
