@@ -8,9 +8,9 @@ MaskGMT is a text-to-music generation paradigm using a hierarchy bidirectional t
 During training, MaskGMT learns to predict randomly masked tokens by attending to tokens in all directions at different residual quantification stages (8 by default). 
 At inference time, the model begins with generating all main tokens of a music sequence simultaneously, and then refines the residual sequence iteratively conditioned on the previous generation. 
 
-## Usage
+## 1. Usage
 
-### Text-Conditional Generator
+### 1.1. Text-Conditional Generator
 A text-to-music model that conditions the generation with `t5-base` text embeddings. 
 
 ```py
@@ -58,7 +58,7 @@ music_tokens = maskgmt_model.generate(
 ```
 
 
-### Music Tokenizer and DeTokenizer 
+### 1.2. Music Tokenizer and DeTokenizer 
 Transfer wav formation of music to torch code and revserse back.
 
 ```py
@@ -85,12 +85,12 @@ save_audio(frames, path, sample_rate= model.sample_rate)
 ```
 
 
-## Cases 
+## 2. Cases 
 We provide the trained ckpt in the google drive.
 Some well-generated music cases can be found in google drive.
 
 
 
-## Acknowledge 
+## 3. Acknowledge 
 
 Our implementation is based on [encodec](https://github.com/facebookresearch/encodec), [MaskGiT](https://github.com/lucidrains/muse-maskgit-pytorch), and [Huggingface](https://github.com/huggingface/transformers). Thanks for their clear and beautiful code. 
